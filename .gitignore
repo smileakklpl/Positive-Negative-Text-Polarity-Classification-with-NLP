@@ -1,0 +1,18 @@
+# Models and Checkpoints
+result/version3_model/
+
+# Python logs and caches
+__pycache__/
+*.py[cod]
+*$py.class
+.ipynb_checkpoints/
+logs/
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+Thumds.db
+
+# Data (optional, usually data is too large for GitHub)
+# data/

@@ -14,7 +14,10 @@ dependencies = [
     "seaborn",
     "ipykernel",
     "notebook",
-    "regex"
+    "regex",
+    "torch",
+    "transformers",
+    "accelerate",
 ]
 
 [build-system]

@@ -1,0 +1,22 @@
+[project]
+name = "positive-negative-text-polarity-classification"
+version = "0.1.0"
+description = "Text Polarity Classification with NLP"
+authors = [
+    { name = "Your Name" }
+]
+dependencies = [
+    "pandas",
+    "numpy",
+    "scikit-learn",
+    "nltk",
+    "matplotlib",
+    "seaborn",
+    "ipykernel",
+    "notebook",
+    "regex"
+]
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"

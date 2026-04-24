@@ -1,5 +1,5 @@
 # Models and Checkpoints
-result/version3_model/
+result/version4_model/
 
 # Python logs and caches
 __pycache__/
@@ -12,6 +12,7 @@ logs/
 .DS_Store
 .DS_Store?
 ._*
+.venv
 Thumds.db
 
 # Data (optional, usually data is too large for GitHub)

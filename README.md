@@ -20,9 +20,37 @@ Note: the text in the dataset is semi-processed. This makes the pre-processing m
 | **v2** | Feature Expansion: Word + Char TF-IDF (15k features) | 0.6697 | 0.6735 | 達到詞袋模型天花板 |
 | **v3** | **Pre-trained Transformer (DistilBERT)** | 0.8196 | 0.8033 | 語義理解帶來顯著提升，但存在嚴重過擬合 (Loss 0.75) |
 | **v3.1** | **Refined BERT: Preprocessing + Regularization** | **0.8239** | **0.8133** | 成功控制過擬合 (Loss 0.45)，泛化能力增強 |
+| **v4 (正式版)** | **RoBERTa-base + Stratified 5-Fold + Soft Voting Ensemble** | **0.8348** | **0.8305** | GPU 訓練完成，泛化與穩定性均優於 v3.1 |
 
 ### 結論與後續建議
-1. **Transformer 是正解**: 從 67% 到 81% 的跳躍證明了預訓練模型在處理「脫離上下文」文字時的強大語意補全能力。
-2. **正則化是關鍵**: 在小樣本上使用 BERT，低學習率 (2e-5) 與權重衰減 (0.05) 是防止模型走火入魔的關鍵。
-3. **後續方向**: 若想進階到 85%+，可考慮使用更大的模型（如 `roberta-large`）或採用 **K-Fold Cross Validation** 進行模型集成（Ensemble）。
+1. **Transformer 仍是主力**: v4 正式版達到 F1 0.8348，已超過 v3.1 的 0.8239。
+2. **K-Fold + Ensemble 有效**: 多 fold 訓練與 soft voting 降低了單次切分的波動。
+3. **後續方向**: 若要再往上，可嘗試 `roberta-large`、調整 learning rate/batch size，或做多模型集成。
 
+## 檔案層級與用途 (Project Structure)
+
+| Path | Purpose |
+| :--- | :--- |
+| `data/` | 原始訓練資料、測試資料與提交範例 |
+| `doc/` | 額外報告、筆記與說明文件 |
+| `result/` | 各版本模型輸出與 submission 檔 |
+| `src/version1.py` | v1 基線：TF-IDF + Logistic Regression |
+| `src/version2.py` | v2 改良：Word + Char TF-IDF + Logistic Regression |
+| `src/version3.py` | v3 Transformer：DistilBERT 微調 |
+| `src/version4.py` | v4 正式版：RoBERTa-base + 5-Fold + Soft Voting |
+| `src/docs/v1_strategy.md` | v1 詳細策略說明 |
+| `src/docs/v2_strategy.md` | v2 詳細策略說明 |
+| `src/docs/v3_strategy.md` | v3 / v3.1 詳細策略說明 |
+| `src/docs/v4_strategy.md` | v4 詳細策略說明 |
+| `README.md` | 專案摘要、成績總覽與文件導覽 |
+| `requirements.txt` | Python 套件依賴 |
+| `pyproject.toml` | 專案設定與建置資訊 |
+
+## 詳細策略文件索引
+
+各版本的完整策略與實作筆記已拆分至 `src/docs/`：
+
+- [v1_strategy.md](src/docs/v1_strategy.md)
+- [v2_strategy.md](src/docs/v2_strategy.md)
+- [v3_strategy.md](src/docs/v3_strategy.md)
+- [v4_strategy.md](src/docs/v4_strategy.md)

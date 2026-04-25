@@ -25,18 +25,20 @@ except ImportError:
 
 TRAIN_PATH = "data/train_2022.csv"
 TEST_PATH = "data/test_no_answer_2022.csv"
-OUTPUT_DIR = "result/version4_model"
-SUBMISSION_PATH = "result/submission_v4.csv"
+OUTPUT_DIR = "result/version5_model"
+SUBMISSION_PATH = "result/submission_v5.csv"
 MAX_LENGTH = 192
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Version 4: HF model + K-Fold ensemble")
-    parser.add_argument("--model_name", type=str, default="roberta-base", help="Hugging Face model id")
+    parser = argparse.ArgumentParser(description="Version 5: RoBERTa-large + Pseudo-labeling")
+    parser.add_argument("--model_name", type=str, default="roberta-large", help="Hugging Face model id")
+    parser.add_argument("--pseudo_label_path", type=str, default="result/submission_v4.csv", help="Path to v4 predictions for pseudo-labeling")
     parser.add_argument("--num_folds", type=int, default=5)
     parser.add_argument("--epochs", type=int, default=3)
-    parser.add_argument("--batch_size", type=int, default=16)
-    parser.add_argument("--learning_rate", type=float, default=2e-5)
+    parser.add_argument("--batch_size", type=int, default=8, help="Smaller batch size for Large model")
+    parser.add_argument("--grad_accum", type=int, default=2, help="Gradient accumulation steps")
+    parser.add_argument("--learning_rate", type=float, default=1e-5, help="Lower LR for Large model")
     parser.add_argument("--weight_decay", type=float, default=0.05)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--force_cpu", action="store_true", help="Force CPU training")
@@ -108,24 +110,13 @@ def compute_metrics(eval_pred):
     }
 
 
-def is_cuda_usable():
-    if not torch.cuda.is_available():
-        return False
-    try:
-        test_tensor = torch.tensor([1.0], device="cuda")
-        _ = (test_tensor * 2).cpu()
-        return True
-    except Exception as e:
-        print(f"[Warning] CUDA is available but not usable. Fallback to CPU. Detail: {e}")
-        return False
-
-
 def build_training_args(output_dir, args, use_cpu=False):
     args_dict = {
         "output_dir": output_dir,
         "num_train_epochs": args.epochs,
         "per_device_train_batch_size": args.batch_size,
-        "per_device_eval_batch_size": args.batch_size,
+        "per_device_eval_batch_size": args.batch_size * 2,
+        "gradient_accumulation_steps": args.grad_accum,
         "learning_rate": args.learning_rate,
         "weight_decay": args.weight_decay,
         "warmup_ratio": 0.1,
@@ -136,33 +127,17 @@ def build_training_args(output_dir, args, use_cpu=False):
         "logging_steps": 50,
         "report_to": "none",
         "seed": args.seed,
+        "fp16": not use_cpu, # 啟用 FP16 節省顯存並加速訓練
     }
 
-    if use_cpu:
-        try:
-            return TrainingArguments(**args_dict, eval_strategy="epoch", use_cpu=True)
-        except TypeError:
-            try:
-                return TrainingArguments(**args_dict, evaluation_strategy="epoch", use_cpu=True)
-            except TypeError:
-                try:
-                    return TrainingArguments(**args_dict, eval_strategy="epoch", no_cuda=True)
-                except TypeError:
-                    return TrainingArguments(**args_dict, evaluation_strategy="epoch", no_cuda=True)
-
+    # 處理 Transformers 版本相容性
     try:
-        return TrainingArguments(**args_dict, eval_strategy="epoch")
+        return TrainingArguments(**args_dict, eval_strategy="epoch", use_cpu=use_cpu)
     except TypeError:
-        return TrainingArguments(**args_dict, evaluation_strategy="epoch")
-
-
-def get_data_paths():
-    train_path = TRAIN_PATH
-    test_path = TEST_PATH
-    if not os.path.exists(train_path):
-        train_path = "../data/train_2022.csv"
-        test_path = "../data/test_no_answer_2022.csv"
-    return train_path, test_path
+        try:
+            return TrainingArguments(**args_dict, evaluation_strategy="epoch", use_cpu=use_cpu)
+        except TypeError:
+            return TrainingArguments(**args_dict, evaluation_strategy="epoch", no_cuda=use_cpu)
 
 
 def main():
@@ -170,66 +145,66 @@ def main():
     set_seed(args.seed)
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-    use_cpu = args.force_cpu or (not is_cuda_usable())
+    use_cpu = args.force_cpu or not torch.cuda.is_available()
     print(f"Runtime device: {'cpu' if use_cpu else 'cuda'}")
-
     print(f"Using model: {args.model_name}")
-    train_path, test_path = get_data_paths()
 
-    train_df = pd.read_csv(train_path)
-    test_df = pd.read_csv(test_path)
+    # 1. 讀取原始資料
+    train_df = pd.read_csv(TRAIN_PATH if os.path.exists(TRAIN_PATH) else f"../{TRAIN_PATH}")
+    test_df = pd.read_csv(TEST_PATH if os.path.exists(TEST_PATH) else f"../{TEST_PATH}")
 
     train_df["CLEAN_TEXT"] = train_df["TEXT"].apply(clean_for_transformer)
     test_df["CLEAN_TEXT"] = test_df["TEXT"].apply(clean_for_transformer)
 
+    # 2. 讀取偽標籤 (Pseudo-labels)
+    pseudo_df = None
+    if os.path.exists(args.pseudo_label_path):
+        print(f"Loaded pseudo-labels from {args.pseudo_label_path}")
+        pseudo_labels = pd.read_csv(args.pseudo_label_path)
+        pseudo_df = pd.merge(test_df, pseudo_labels, on="row_id")
+    else:
+        print(f"[Warning] Pseudo-label file {args.pseudo_label_path} not found. Training without it.")
+
     tokenizer = AutoTokenizer.from_pretrained(args.model_name)
     data_collator = DataCollatorWithPadding(tokenizer=tokenizer)
 
-    test_encodings = tokenizer(
-        test_df["CLEAN_TEXT"].tolist(),
-        truncation=True,
-        max_length=MAX_LENGTH,
-    )
+    test_encodings = tokenizer(test_df["CLEAN_TEXT"].tolist(), truncation=True, max_length=MAX_LENGTH)
     test_dataset = TextDataset(test_encodings)
 
     skf = StratifiedKFold(n_splits=args.num_folds, shuffle=True, random_state=args.seed)
     y = train_df["LABEL"].values
 
-    # 計算 Class Weights 以處理資料不平衡
-    class_weights_arr = compute_class_weight(class_weight="balanced", classes=np.unique(y), y=y)
-    class_weights_tensor = torch.tensor(class_weights_arr, dtype=torch.float).to("cuda" if not use_cpu else "cpu")
-    print(f"Class Weights (Balanced): {class_weights_arr}")
-
     fold_metrics = []
     fold_test_probs = []
 
+    # 3. K-Fold 訓練
     for fold_idx, (tr_idx, va_idx) in enumerate(skf.split(train_df, y), start=1):
         print(f"\n===== Fold {fold_idx}/{args.num_folds} =====")
         fold_dir = os.path.join(OUTPUT_DIR, f"fold_{fold_idx}")
-        os.makedirs(fold_dir, exist_ok=True)
-
+        
+        # 取得當前 Fold 的原始訓練與驗證集
         tr_texts = train_df.iloc[tr_idx]["CLEAN_TEXT"].tolist()
+        tr_labels = y[tr_idx].tolist()
         va_texts = train_df.iloc[va_idx]["CLEAN_TEXT"].tolist()
-        tr_labels = y[tr_idx]
-        va_labels = y[va_idx]
+        va_labels = y[va_idx].tolist()
+
+        # 將 Pseudo-labels 加入到訓練集 (不加入驗證集，避免 Data Leakage)
+        if pseudo_df is not None:
+            tr_texts.extend(pseudo_df["CLEAN_TEXT"].tolist())
+            tr_labels.extend(pseudo_df["LABEL"].tolist())
+
+        # 計算當前混合訓練集的 Class Weights
+        class_weights_arr = compute_class_weight(class_weight="balanced", classes=np.unique(tr_labels), y=tr_labels)
+        class_weights_tensor = torch.tensor(class_weights_arr, dtype=torch.float).to("cuda" if not use_cpu else "cpu")
 
         tr_enc = tokenizer(tr_texts, truncation=True, max_length=MAX_LENGTH)
         va_enc = tokenizer(va_texts, truncation=True, max_length=MAX_LENGTH)
 
-        tr_ds = TextDataset(tr_enc, tr_labels)
-        va_ds = TextDataset(va_enc, va_labels)
-
-        model = AutoModelForSequenceClassification.from_pretrained(
-            args.model_name,
-            num_labels=2,
-            ignore_mismatched_sizes=True,
-        )
-
         trainer = WeightedTrainer(
-            model=model,
+            model=AutoModelForSequenceClassification.from_pretrained(args.model_name, num_labels=2, ignore_mismatched_sizes=True),
             args=build_training_args(fold_dir, args, use_cpu=use_cpu),
-            train_dataset=tr_ds,
-            eval_dataset=va_ds,
+            train_dataset=TextDataset(tr_enc, tr_labels),
+            eval_dataset=TextDataset(va_enc, va_labels),
             tokenizer=tokenizer,
             data_collator=data_collator,
             compute_metrics=compute_metrics,
@@ -238,25 +213,9 @@ def main():
         )
 
         trainer.train()
-
-        eval_result = trainer.evaluate()
-        fold_metrics.append(
-            {
-                "fold": fold_idx,
-                "eval_f1": eval_result.get("eval_f1", np.nan),
-                "eval_accuracy": eval_result.get("eval_accuracy", np.nan),
-                "eval_loss": eval_result.get("eval_loss", np.nan),
-            }
-        )
-        print(
-            f"Fold {fold_idx} -> F1: {fold_metrics[-1]['eval_f1']:.4f}, "
-            f"Acc: {fold_metrics[-1]['eval_accuracy']:.4f}"
-        )
-
-        test_pred = trainer.predict(test_dataset)
-        logits = torch.tensor(test_pred.predictions)
-        probs = torch.softmax(logits, dim=1).numpy()
-        fold_test_probs.append(probs)
+        fold_metrics.append({"fold": fold_idx, **trainer.evaluate()})
+        
+        fold_test_probs.append(torch.softmax(torch.tensor(trainer.predict(test_dataset).predictions), dim=1).numpy())
 
     mean_test_probs = np.mean(np.stack(fold_test_probs, axis=0), axis=0)
     final_preds = np.argmax(mean_test_probs, axis=1)
@@ -266,17 +225,17 @@ def main():
     )
 
     metrics_df = pd.DataFrame(fold_metrics)
-    metrics_path = os.path.join(OUTPUT_DIR, "cv_metrics_v4.csv")
+    metrics_path = os.path.join(OUTPUT_DIR, "cv_metrics_v5.csv")
     metrics_df.to_csv(metrics_path, index=False)
 
     print("\n===== CV Summary =====")
-    print(metrics_df)
+    print(metrics_df[["fold", "eval_loss", "eval_f1", "eval_accuracy"]])
     print("-" * 30)
-    print(f"Mean F1: {metrics_df['eval_f1'].mean():.4f}")
-    print(f"Mean Acc: {metrics_df['eval_accuracy'].mean():.4f}")
+    if "eval_f1" in metrics_df.columns:
+        print(f"Mean F1: {metrics_df['eval_f1'].mean():.4f}")
+        print(f"Mean Acc: {metrics_df['eval_accuracy'].mean():.4f}")
     print(f"Saved submission to: {SUBMISSION_PATH}")
     print(f"Saved fold metrics to: {metrics_path}")
-
 
 if __name__ == "__main__":
     main()

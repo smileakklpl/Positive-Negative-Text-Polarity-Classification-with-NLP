@@ -1,4 +1,4 @@
-# v4 策略與實作說明
+# v4 & v4.1 策略與實作說明
 
 ## 1. 目標
 - 從單次切分驗證升級為更穩定的評估方式。
@@ -10,6 +10,7 @@
 2. 模型：以 RoBERTa-base 為主，可透過 `--model_name` 切換。
 3. 訓練方式：每個 fold 各自訓練一個模型，並以 `eval_f1` 選擇最佳 checkpoint。
 4. 集成方式：對測試集預測結果做 soft voting，取各類別機率平均後再決策。
+5. **v4.1 新增策略 (Class Weights)：** 透過覆寫 `Trainer.compute_loss` 實作自訂的 `WeightedTrainer`，並使用 `sklearn` 算出的 `balanced` class weights 傳入 CrossEntropyLoss 中。此舉旨在增加少數類別分類錯誤時的懲罰，解決分類資料不平衡的潛在不足。
 
 ## 3. 執行環境
 - 訓練腳本：`src/version4.py`
@@ -41,3 +42,4 @@ python src/version4.py --model_name distilbert-base-uncased --num_folds 5 --epoc
 1. 驗證方式改變：從 holdout 改成 K-Fold，降低切分隨機性。
 2. 預測方式改變：從單模型輸出改成 soft-voting ensemble，提升穩定性。
 3. 執行方式改變：使用可用於 GPU 的 runtime，能實際完成完整 fold 訓練。
+4. **v4.1 改進點：** 針對資料分類不平衡，在 Loss 函數中加入動態計算的 Class Weights，讓模型在訓練過程中不再強烈偏向佔多數的類別。

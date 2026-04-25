@@ -1,5 +1,6 @@
 # Models and Checkpoints
 result/version4_model/
+result/version5_model/
 
 # Python logs and caches
 __pycache__/
@@ -7,6 +8,7 @@ __pycache__/
 *$py.class
 .ipynb_checkpoints/
 logs/
+.vscode/
 
 # OS generated files
 .DS_Store

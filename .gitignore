@@ -1,6 +1,7 @@
 # Models and Checkpoints
 result/version4_model/
 result/version5_model/
+result/version6_model/
 
 # Python logs and caches
 __pycache__/

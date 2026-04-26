@@ -23,11 +23,12 @@ Note: the text in the dataset is semi-processed. This makes the pre-processing m
 | **v4 (正式版)** | **RoBERTa-base + Stratified 5-Fold + Soft Voting Ensemble** | **0.8348** | **0.8305** | GPU 訓練完成，泛化與穩定性均優於 v3.1 |
 | **v4.1** | **RoBERTa-base + Stratified 5-Fold + Class Weights** | **0.8348** | **0.8305** | 引入 WeightedTrainer 與 balanced 權重處理資料不平衡 |
 | **v5** | **RoBERTa-large + Pseudo-labeling + FP16** | **0.8715** | **0.8695** | 引入 v4 預測作偽標籤，大幅突破準確率天花板。Train Loss 收斂至 ~0.255 |
+| **v6** | **Two-Stage Self-Training + Confidence/Margin Filtering + OOF Threshold Tuning** | **0.8546** | **0.8520** | 相較 stage1 提升明顯，且 fold 波動下降；最佳 OOF 閾值由 0.42 上移至 0.71 |
 
 ### 結論與後續建議
-1. **模型容量與資料量的突破**: v5 升級 `roberta-large` 並引入 Pseudo-labeling 後，不僅訓練穩定，**Eval F1 更是大幅躍升至 0.8715**，成功突破先前的瓶頸。
-2. **硬體資源最佳化**: 透過 FP16 與梯度累積，RTX 5070 Ti 成功扛住 Large 模型。單 Fold 訓練僅需約 6.5~9 分鐘 (總時長約 39 分鐘)。
-3. **後續方向**: 針對 Pseudo-labeling，未來可實作信心度過濾 (Confidence Thresholding)，只取機率 > 0.9 或 < 0.1 的高信心樣本作為偽標籤。
+1. **v5 的突破已完成**: 透過 `roberta-large` + pseudo-labeling，模型能力大幅上升。
+2. **v6 的重點改為穩定泛化**: 二階段自訓練（gold-only -> gold+pseudo）在本次實測中，平均 F1 由 0.8350 提升到 0.8546，平均 Acc 由 0.8320 提升到 0.8520。
+3. **v6 對 leaderboard 偏差更有韌性**: 使用 OOF 機率調整最佳決策閾值，避免固定 0.5 帶來的偏差；本次最佳閾值為 0.71。
 
 ## 檔案層級與用途 (Project Structure)
 
@@ -41,11 +42,13 @@ Note: the text in the dataset is semi-processed. This makes the pre-processing m
 | `src/version3.py` | v3 Transformer：DistilBERT 微調 |
 | `src/version4.py` | v4 正式版：RoBERTa-base + 5-Fold + Soft Voting |
 | `src/version5.py` | v5 進階版：RoBERTa-large + Pseudo-labeling + FP16 |
+| `src/version6.py` | v6 泛化版：Two-Stage Self-Training + Confidence-Filtered Soft Pseudo Labels + OOF Threshold Tuning |
 | `src/docs/v1_strategy.md` | v1 詳細策略說明 |
 | `src/docs/v2_strategy.md` | v2 詳細策略說明 |
 | `src/docs/v3_strategy.md` | v3 / v3.1 詳細策略說明 |
 | `src/docs/v4_strategy.md` | v4 詳細策略說明 |
 | `src/docs/v5_strategy.md` | v5 詳細策略說明 |
+| `src/docs/v6_strategy.md` | v6 詳細策略說明 |
 | `README.md` | 專案摘要、成績總覽與文件導覽 |
 | `requirements.txt` | Python 套件依賴 |
 | `pyproject.toml` | 專案設定與建置資訊 |
@@ -58,3 +61,5 @@ Note: the text in the dataset is semi-processed. This makes the pre-processing m
 - [v2_strategy.md](src/docs/v2_strategy.md)
 - [v3_strategy.md](src/docs/v3_strategy.md)
 - [v4_strategy.md](src/docs/v4_strategy.md)
+- [v5_strategy.md](src/docs/v5_strategy.md)
+- [v6_strategy.md](src/docs/v6_strategy.md)

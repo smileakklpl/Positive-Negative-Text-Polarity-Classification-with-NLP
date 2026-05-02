@@ -1,8 +1,8 @@
-# SentimentForge：多階段 Transformer 集成文字極性分類
+# 正面or負面？：基於 NLP 的文字情感分類
 
-> **SentimentForge** — Iterative Multi-Stage Transformer Ensemble for Text Polarity Classification
+> **Positive/Negative: Text Polarity Classification with NLP**（Kaggle 競賽）
 >
-> 從傳統詞袋模型出發，歷經六個版本的系統性迭代，最終以 RoBERTa-large、DeBERTa-v3-large、ELECTRA-large 三模型集成，在競賽資料集上達到 OOF F1 **0.8864**。
+> 本專案為 Kaggle 競賽作品。從傳統詞袋模型出發，歷經六個版本的系統性迭代，最終採用 **RoBERTa-large、DeBERTa-v3-large、ELECTRA-large 三模型集成**（等權重機率平均 + OOF 閾值校準），在競賽資料集上達到 OOF F1 **0.8864**。
 
 ---
 
@@ -14,19 +14,20 @@
 
 ## 實驗紀錄 (Experiment Tracking)
 
-| 版本 | 策略 | OOF F1 | OOF Acc | 備註 |
-| :--- | :--- | :--- | :--- | :--- |
-| **v1** | TF-IDF (Word 1-2) + Logistic Regression | 0.6622 | 0.6665 | 基礎文字清洗 + 5k 特徵 |
-| **v2** | Feature Expansion：Word + Char TF-IDF (15k features) | 0.6697 | 0.6735 | 達到詞袋模型天花板 |
-| **v3** | Pre-trained Transformer (DistilBERT) | 0.8196 | 0.8033 | 語義理解帶來顯著提升，但存在嚴重過擬合 (Loss 0.75) |
-| **v3.1** | Refined BERT：Preprocessing + Regularization | 0.8239 | 0.8133 | 成功控制過擬合 (Loss 0.45)，泛化能力增強 |
-| **v4** | RoBERTa-base + Stratified 5-Fold + Soft Voting Ensemble | 0.8348 | 0.8305 | GPU 訓練完成，泛化與穩定性均優於 v3.1 |
-| **v4.1** | RoBERTa-base + 5-Fold + Class Weights (WeightedTrainer) | 0.8348 | 0.8305 | 引入 balanced 權重處理資料不平衡 |
-| **v5** | RoBERTa-large + Pseudo-labeling + FP16 | 0.8715 | 0.8695 | 引入 v4 預測作偽標籤，大幅突破準確率天花板 |
-| **v6** | Two-Stage Self-Training + Confidence/Margin Filtering + OOF Threshold | 0.8546 | 0.8520 | Stage2 fold 波動下降；最佳 OOF 閾值 0.71 |
-| **v6.1** | v6 + pseudo_loss_weight=0.3（降低偽標籤影響力） | 0.8694 | — | OOF F1 +0.0117；閾值從 0.71 回落至 0.61 |
-| **v6.5** | DeBERTa-v3-large 替換 RoBERTa-large（同 Two-Stage 框架） | 0.8797 | — | RTD 預訓練 + Disentangled Attention，Stage2 OOF +0.0103 |
-| **v6.6** | **三模型 Ensemble（RoBERTa + DeBERTa + ELECTRA）** | **0.8864** | **0.8865** | 等權重機率平均；ELECTRA 多樣性補足 MLM 系列誤差 |
+| 版本 | 策略 | OOF F1 | Kaggle Private | Kaggle Public | 備註 |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **v1** | TF-IDF (Word 1-2) + Logistic Regression | 0.6622 | — | — | 基礎文字清洗 + 5k 特徵 |
+| **v2** | Feature Expansion：Word + Char TF-IDF (15k) | 0.6697 | 0.66445 | 0.66308 | 達到詞袋模型天花板 |
+| **v3** | Pre-trained Transformer (DistilBERT) | 0.8196 | 0.70854 | 0.70137 | 語義理解帶來顯著提升，但存在嚴重過擬合 |
+| **v3.1** | Refined BERT：Preprocessing + Regularization | 0.8239 | — | — | 成功控制過擬合，泛化能力增強 |
+| **v4** | RoBERTa-base + Stratified 5-Fold + Soft Voting | 0.8348 | 0.76445 | 0.74683 | GPU 訓練完成，泛化與穩定性均優於 v3.1 |
+| **v4.1** | RoBERTa-base + 5-Fold + Class Weights | 0.8348 | — | — | 引入 balanced 權重處理資料不平衡 |
+| **v5** | RoBERTa-large + Pseudo-labeling + FP16 | 0.8715 | 0.76662 | 0.74710 | 引入 v4 預測作偽標籤，突破準確率天花板 |
+| **v6** | Two-Stage Self-Training + Confidence/Margin Filtering | 0.8546 | 0.79023 | 0.78099 | Stage2 fold 波動下降；最佳 OOF 閾值 0.71 |
+| **v6.1** | v6 + pseudo_loss_weight=0.3 | 0.8694 | 0.80515 | 0.79173 | OOF F1 +0.0117；閾值回落至 0.61 |
+| **v6.4** | v6.1 + Stage3 循環自訓練 | 0.8823 | 0.79674 | 0.78484 | OOF 提升但 Private 下降，確認循環偏差問題 |
+| **v6.5** | DeBERTa-v3-large（同 Two-Stage 框架） | 0.8797 | 0.80420 | 0.78870 | Disentangled Attention，Stage2 OOF 超越 v6.1 |
+| **v6.6** | **三模型 Ensemble（RoBERTa + DeBERTa + ELECTRA）** | **0.8864** | **0.81099** | **0.79807** | 等權重機率平均；跨架構多樣性帶來最終提升 |
 
 ### 關鍵里程碑
 

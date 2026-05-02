@@ -1,7 +1,14 @@
-# Models and Checkpoints
-result/version4_model/
-result/version5_model/
-result/version6_model/
+# Models and Checkpoints (trained weights, too large for git)
+# Use general patterns to block future large model directories
+result/version66_ensemble_3model/
+
+# Large model weight file types
+*.safetensors
+*.pt
+optimizer.pt
+
+# result/version66_ensemble_3model/ is intentionally tracked
+# (only contains lightweight CSV prob files + metrics.txt, ~281 KB)
 
 # Python logs and caches
 __pycache__/
@@ -16,7 +23,4 @@ logs/
 .DS_Store?
 ._*
 .venv
-Thumds.db
-
-# Data (optional, usually data is too large for GitHub)
-# data/
+Thumbs.db

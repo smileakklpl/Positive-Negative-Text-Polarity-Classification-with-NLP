@@ -27,8 +27,8 @@ except ImportError:
 
 TRAIN_PATH = "data/train_2022.csv"
 TEST_PATH = "data/test_no_answer_2022.csv"
-OUTPUT_DIR = "result/version6_model"
-SUBMISSION_PATH = "result/submission_v6.csv"
+DEFAULT_OUTPUT_DIR = "result/version6_model"
+DEFAULT_SUBMISSION_PATH = "result/submission_v6.csv"
 MAX_LENGTH = 192
 
 
@@ -63,6 +63,26 @@ def parse_args():
     parser.add_argument("--threshold_grid_step", type=float, default=0.01)
 
     parser.add_argument("--disable_class_weights", action="store_true")
+    parser.add_argument("--disable_fp16", action="store_true",
+                        help="Disable FP16 training (required for DeBERTa-v3)")
+    parser.add_argument("--output_dir", type=str, default=DEFAULT_OUTPUT_DIR)
+    parser.add_argument("--submission_path", type=str, default=DEFAULT_SUBMISSION_PATH)
+    parser.add_argument(
+        "--reuse_stage1",
+        action="store_true",
+        help="Skip Stage 1 training and reuse saved stage1 OOF/test probs from OUTPUT_DIR",
+    )
+    parser.add_argument(
+        "--run_stage3",
+        action="store_true",
+        help="Run Stage 3: re-generate pseudo labels from Stage 2 predictions and train a third round",
+    )
+    parser.add_argument("--epochs_stage3", type=int, default=3)
+    parser.add_argument(
+        "--reuse_stage2",
+        action="store_true",
+        help="Skip Stage 2 training and reuse saved stage2 OOF/test probs from OUTPUT_DIR",
+    )
     return parser.parse_args()
 
 
@@ -183,7 +203,7 @@ def build_training_args(output_dir, epochs, args, use_cpu=False):
         "logging_steps": 50,
         "report_to": "none",
         "seed": args.seed,
-        "fp16": not use_cpu,
+        "fp16": (not use_cpu) and (not args.disable_fp16),
     }
 
     try:
@@ -259,7 +279,7 @@ def find_best_threshold(y_true: np.ndarray, y_prob_pos: np.ndarray, grid_step: f
     best_t = 0.5
     best_f1 = -1.0
     step = min(0.1, max(0.001, grid_step))
-    thresholds = np.arange(0.2, 0.8 + 1e-8, step)
+    thresholds = np.arange(0.05, 0.95 + 1e-8, step)
 
     for t in thresholds:
         pred = (y_prob_pos >= t).astype(int)
@@ -283,6 +303,7 @@ def train_kfold_stage(
     args,
     use_cpu: bool,
     epochs: int,
+    output_dir: str = DEFAULT_OUTPUT_DIR,
     pseudo_texts: Optional[List[str]] = None,
     pseudo_soft_labels: Optional[np.ndarray] = None,
 ):
@@ -301,7 +322,7 @@ def train_kfold_stage(
 
     for fold_idx, (tr_idx, va_idx) in enumerate(skf.split(train_df, y), start=1):
         print(f"\n===== {stage_name} Fold {fold_idx}/{args.num_folds} =====")
-        fold_dir = os.path.join(OUTPUT_DIR, stage_name, f"fold_{fold_idx}")
+        fold_dir = os.path.join(output_dir, stage_name, f"fold_{fold_idx}")
         os.makedirs(fold_dir, exist_ok=True)
 
         tr_texts = train_df.iloc[tr_idx]["CLEAN_TEXT"].tolist()
@@ -373,6 +394,8 @@ def train_kfold_stage(
 def main():
     args = parse_args()
     set_seed(args.seed)
+    OUTPUT_DIR = args.output_dir
+    SUBMISSION_PATH = args.submission_path
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
     use_cpu = args.force_cpu or (not torch.cuda.is_available())
@@ -392,20 +415,50 @@ def main():
     y = train_df["LABEL"].values
     skf = StratifiedKFold(n_splits=args.num_folds, shuffle=True, random_state=args.seed)
 
-    print("\n[Stage 1] Train on gold labels only")
-    stage1_metrics, oof_probs_s1, test_probs_s1 = train_kfold_stage(
-        stage_name="stage1_gold_only",
-        model_name=args.model_name,
-        train_df=train_df,
-        test_df=test_df,
-        tokenizer=tokenizer,
-        data_collator=data_collator,
-        skf=skf,
-        y=y,
-        args=args,
-        use_cpu=use_cpu,
-        epochs=args.epochs_stage1,
-    )
+    stage1_oof_path = os.path.join(OUTPUT_DIR, "oof_stage1_probs_v6.csv")
+    stage1_test_path = os.path.join(OUTPUT_DIR, "test_stage1_probs_v6.csv")
+    stage1_metrics_path = os.path.join(OUTPUT_DIR, "cv_metrics_stage1_v6.csv")
+    stage2_oof_path = os.path.join(OUTPUT_DIR, "oof_stage2_probs_v6.csv")
+    stage2_test_path = os.path.join(OUTPUT_DIR, "test_stage2_probs_v6.csv")
+    stage2_metrics_path = os.path.join(OUTPUT_DIR, "cv_metrics_stage2_v6.csv")
+
+    if args.reuse_stage1 and os.path.exists(stage1_oof_path) and os.path.exists(stage1_test_path):
+        print("\n[Stage 1] Reusing saved Stage 1 probs (--reuse_stage1 flag set)")
+        s1_oof_df = pd.read_csv(stage1_oof_path)
+        oof_probs_s1 = s1_oof_df[["prob_0", "prob_1"]].values.astype(np.float32)
+        s1_test_df = pd.read_csv(stage1_test_path)
+        test_probs_s1 = s1_test_df[["prob_0", "prob_1"]].values.astype(np.float32)
+        stage1_metrics = pd.read_csv(stage1_metrics_path) if os.path.exists(stage1_metrics_path) else pd.DataFrame()
+    else:
+        print("\n[Stage 1] Train on gold labels only")
+        stage1_metrics, oof_probs_s1, test_probs_s1 = train_kfold_stage(
+            stage_name="stage1_gold_only",
+            model_name=args.model_name,
+            train_df=train_df,
+            test_df=test_df,
+            tokenizer=tokenizer,
+            data_collator=data_collator,
+            skf=skf,
+            y=y,
+            args=args,
+            use_cpu=use_cpu,
+            epochs=args.epochs_stage1,
+            output_dir=OUTPUT_DIR,
+        )
+        s1_oof_df = pd.DataFrame({
+            "row_id": train_df["row_id"],
+            "label": y,
+            "prob_0": oof_probs_s1[:, 0],
+            "prob_1": oof_probs_s1[:, 1],
+        })
+        s1_oof_df.to_csv(stage1_oof_path, index=False)
+        s1_test_df = pd.DataFrame({
+            "row_id": test_df["row_id"],
+            "prob_0": test_probs_s1[:, 0],
+            "prob_1": test_probs_s1[:, 1],
+        })
+        s1_test_df.to_csv(stage1_test_path, index=False)
+        stage1_metrics.to_csv(stage1_metrics_path, index=False)
 
     s1_threshold, s1_f1 = find_best_threshold(y, oof_probs_s1[:, 1], args.threshold_grid_step)
     print(f"[Stage 1] Best OOF threshold={s1_threshold:.3f}, F1={s1_f1:.4f}")
@@ -428,31 +481,106 @@ def main():
     pseudo_texts = test_df.iloc[pseudo_result.selected_indices]["CLEAN_TEXT"].tolist() if pseudo_count > 0 else None
     pseudo_soft_labels = pseudo_result.selected_probs if pseudo_count > 0 else None
 
-    print("\n[Stage 2] Train on gold + confidence-filtered soft pseudo labels")
-    stage2_metrics, oof_probs_s2, test_probs_s2 = train_kfold_stage(
-        stage_name="stage2_gold_plus_pseudo",
-        model_name=args.model_name,
-        train_df=train_df,
-        test_df=test_df,
-        tokenizer=tokenizer,
-        data_collator=data_collator,
-        skf=skf,
-        y=y,
-        args=args,
-        use_cpu=use_cpu,
-        epochs=args.epochs_stage2,
-        pseudo_texts=pseudo_texts,
-        pseudo_soft_labels=pseudo_soft_labels,
-    )
+    if args.reuse_stage2 and os.path.exists(stage2_oof_path) and os.path.exists(stage2_test_path):
+        print("\n[Stage 2] Reusing saved Stage 2 probs (--reuse_stage2 flag set)")
+        s2_oof_df = pd.read_csv(stage2_oof_path)
+        oof_probs_s2 = s2_oof_df[["prob_0", "prob_1"]].values.astype(np.float32)
+        s2_test_df = pd.read_csv(stage2_test_path)
+        test_probs_s2 = s2_test_df[["prob_0", "prob_1"]].values.astype(np.float32)
+        stage2_metrics = pd.read_csv(stage2_metrics_path) if os.path.exists(stage2_metrics_path) else pd.DataFrame()
+    else:
+        print("\n[Stage 2] Train on gold + confidence-filtered soft pseudo labels")
+        stage2_metrics, oof_probs_s2, test_probs_s2 = train_kfold_stage(
+            stage_name="stage2_gold_plus_pseudo",
+            model_name=args.model_name,
+            train_df=train_df,
+            test_df=test_df,
+            tokenizer=tokenizer,
+            data_collator=data_collator,
+            skf=skf,
+            y=y,
+            args=args,
+            use_cpu=use_cpu,
+            epochs=args.epochs_stage2,
+            output_dir=OUTPUT_DIR,
+            pseudo_texts=pseudo_texts,
+            pseudo_soft_labels=pseudo_soft_labels,
+        )
+        s2_test_df = pd.DataFrame({
+            "row_id": test_df["row_id"],
+            "prob_0": test_probs_s2[:, 0],
+            "prob_1": test_probs_s2[:, 1],
+        })
+        s2_test_df.to_csv(stage2_test_path, index=False)
+        stage2_metrics.to_csv(stage2_metrics_path, index=False)
 
     s2_threshold, s2_f1 = find_best_threshold(y, oof_probs_s2[:, 1], args.threshold_grid_step)
     print(f"[Stage 2] Best OOF threshold={s2_threshold:.3f}, F1={s2_f1:.4f}")
 
-    final_preds = (test_probs_s2[:, 1] >= s2_threshold).astype(int)
+    # Stage 3: re-generate pseudo labels from Stage 2 predictions
+    if args.run_stage3:
+        pseudo_result_s3 = select_confident_pseudo_labels(
+            probs=test_probs_s2,
+            confidence_threshold=args.confidence_threshold,
+            margin_threshold=args.margin_threshold,
+            max_pseudo_per_class=args.max_pseudo_per_class,
+        )
+        pseudo_count_s3 = len(pseudo_result_s3.selected_indices)
+        print(f"\n[Stage 3 Pseudo] Selected {pseudo_count_s3} high-confidence samples from Stage 2 predictions")
+
+        pseudo_texts_s3 = test_df.iloc[pseudo_result_s3.selected_indices]["CLEAN_TEXT"].tolist() if pseudo_count_s3 > 0 else None
+        pseudo_soft_labels_s3 = pseudo_result_s3.selected_probs if pseudo_count_s3 > 0 else None
+
+        print("\n[Stage 3] Train on gold + Stage-2-derived soft pseudo labels")
+        stage3_metrics, oof_probs_s3, test_probs_s3 = train_kfold_stage(
+            stage_name="stage3_gold_plus_pseudo_s2",
+            model_name=args.model_name,
+            train_df=train_df,
+            test_df=test_df,
+            tokenizer=tokenizer,
+            data_collator=data_collator,
+            skf=skf,
+            y=y,
+            args=args,
+            use_cpu=use_cpu,
+            epochs=args.epochs_stage3,
+            output_dir=OUTPUT_DIR,
+            pseudo_texts=pseudo_texts_s3,
+            pseudo_soft_labels=pseudo_soft_labels_s3,
+        )
+
+        s3_threshold, s3_f1 = find_best_threshold(y, oof_probs_s3[:, 1], args.threshold_grid_step)
+        print(f"[Stage 3] Best OOF threshold={s3_threshold:.3f}, F1={s3_f1:.4f}")
+
+        # Save Stage 3 pseudo diagnostics
+        pseudo_diag_s3 = pseudo_result_s3.diagnostics.copy()
+        pseudo_diag_s3.insert(0, "row_id", test_df.iloc[pseudo_diag_s3["test_index"]]["row_id"].values)
+        pseudo_diag_s3.to_csv(os.path.join(OUTPUT_DIR, "pseudo_selected_stage3_v6.csv"), index=False)
+
+        # Save Stage 3 OOF probs
+        oof_s3_df = pd.DataFrame({
+            "row_id": train_df["row_id"],
+            "label": y,
+            "prob_0": oof_probs_s3[:, 0],
+            "prob_1": oof_probs_s3[:, 1],
+        })
+        oof_s3_df.to_csv(os.path.join(OUTPUT_DIR, "oof_stage3_probs_v6.csv"), index=False)
+
+        # Use Stage 3 for final output
+        final_test_probs = test_probs_s3
+        final_threshold = s3_threshold
+        final_oof_probs = oof_probs_s3
+        all_metrics = pd.concat([stage1_metrics, stage2_metrics, stage3_metrics], ignore_index=True)
+    else:
+        final_test_probs = test_probs_s2
+        final_threshold = s2_threshold
+        final_oof_probs = oof_probs_s2
+        all_metrics = pd.concat([stage1_metrics, stage2_metrics], ignore_index=True)
+
+    final_preds = (final_test_probs[:, 1] >= final_threshold).astype(int)
     submission_df = pd.DataFrame({"row_id": test_df["row_id"], "LABEL": final_preds})
     submission_df.to_csv(SUBMISSION_PATH, index=False)
 
-    all_metrics = pd.concat([stage1_metrics, stage2_metrics], ignore_index=True)
     metrics_path = os.path.join(OUTPUT_DIR, "cv_metrics_v6.csv")
     all_metrics.to_csv(metrics_path, index=False)
 
@@ -460,8 +588,8 @@ def main():
         {
             "row_id": train_df["row_id"],
             "label": y,
-            "prob_0": oof_probs_s2[:, 0],
-            "prob_1": oof_probs_s2[:, 1],
+            "prob_0": final_oof_probs[:, 0],
+            "prob_1": final_oof_probs[:, 1],
         }
     )
     oof_path = os.path.join(OUTPUT_DIR, "oof_stage2_probs_v6.csv")
@@ -470,9 +598,9 @@ def main():
     test_prob_df = pd.DataFrame(
         {
             "row_id": test_df["row_id"],
-            "prob_0": test_probs_s2[:, 0],
-            "prob_1": test_probs_s2[:, 1],
-            "pred_threshold": s2_threshold,
+            "prob_0": final_test_probs[:, 0],
+            "prob_1": final_test_probs[:, 1],
+            "pred_threshold": final_threshold,
         }
     )
     test_prob_path = os.path.join(OUTPUT_DIR, "test_probs_v6.csv")
@@ -487,12 +615,17 @@ def main():
         f.write(f"stage1_oof_f1={s1_f1:.6f}\n")
         f.write(f"stage2_best_threshold={s2_threshold:.6f}\n")
         f.write(f"stage2_oof_f1={s2_f1:.6f}\n")
+        if args.run_stage3:
+            f.write(f"stage3_best_threshold={s3_threshold:.6f}\n")
+            f.write(f"stage3_oof_f1={s3_f1:.6f}\n")
 
     print("\n===== V6 Summary =====")
     print(all_metrics)
     print("-" * 40)
     print(f"Stage1 OOF Best F1: {s1_f1:.4f} @ threshold {s1_threshold:.3f}")
     print(f"Stage2 OOF Best F1: {s2_f1:.4f} @ threshold {s2_threshold:.3f}")
+    if args.run_stage3:
+        print(f"Stage3 OOF Best F1: {s3_f1:.4f} @ threshold {s3_threshold:.3f}")
     print(f"Saved submission to: {SUBMISSION_PATH}")
     print(f"Saved CV metrics to: {metrics_path}")
     print(f"Saved OOF probs to: {oof_path}")
